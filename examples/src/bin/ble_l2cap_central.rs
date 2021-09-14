@@ -1,14 +1,12 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
-#![feature(min_type_alias_impl_trait)]
-#![feature(impl_trait_in_bindings)]
 #![feature(alloc_error_handler)]
+#![allow(incomplete_features)]
 extern crate alloc;
 
 #[path = "../example_common.rs"]
 mod example_common;
-use example_common::*;
 
 use core::mem;
 use core::ptr::NonNull;
@@ -16,7 +14,7 @@ use core::slice;
 use cortex_m_rt::entry;
 use defmt::info;
 use defmt::*;
-use embassy::executor::{task, Executor};
+use embassy::executor::Executor;
 use embassy::util::Forever;
 
 use nrf_softdevice::ble::l2cap::Packet as _;
@@ -28,12 +26,12 @@ static EXECUTOR: Forever<Executor> = Forever::new();
 
 const PSM: u16 = 0x2349;
 
-#[task]
+#[embassy::task]
 async fn softdevice_task(sd: &'static Softdevice) {
     sd.run().await;
 }
 
-#[task]
+#[embassy::task]
 async fn ble_central_task(sd: &'static Softdevice) {
     info!("Scanning for peer...");
 
@@ -90,7 +88,7 @@ async fn ble_central_task(sd: &'static Softdevice) {
     for i in 0..10 {
         let mut v = Vec::with_capacity(Packet::MTU);
         v.extend(&[i; Packet::MTU]);
-        unwrap!(ch.tx(Packet(v)));
+        unwrap!(ch.tx(Packet(v)).await);
         info!("l2cap tx done");
     }
     futures::future::pending::<()>().await;
@@ -98,6 +96,7 @@ async fn ble_central_task(sd: &'static Softdevice) {
 
 use alloc::vec::Vec;
 
+#[derive(defmt::Format)]
 struct Packet(Vec<u8>);
 impl l2cap::Packet for Packet {
     const MTU: usize = 512;
@@ -129,9 +128,9 @@ fn main() -> ! {
 
     let config = nrf_softdevice::Config {
         clock: Some(raw::nrf_clock_lf_cfg_t {
-            source: raw::NRF_CLOCK_LF_SRC_XTAL as u8,
-            rc_ctiv: 0,
-            rc_temp_ctiv: 0,
+            source: raw::NRF_CLOCK_LF_SRC_RC as u8,
+            rc_ctiv: 4,
+            rc_temp_ctiv: 2,
             accuracy: 7,
         }),
         conn_gap: Some(raw::ble_gap_conn_cfg_t {
@@ -172,8 +171,7 @@ fn main() -> ! {
         ..Default::default()
     };
 
-    let (sdp, _p) = take_peripherals();
-    let sd = Softdevice::enable(sdp, &config);
+    let sd = Softdevice::enable(&config);
 
     let executor = EXECUTOR.put(Executor::new());
     executor.run(|spawner| {

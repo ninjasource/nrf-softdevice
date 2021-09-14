@@ -4,11 +4,16 @@ use core::mem;
 use core::ptr;
 
 use crate::ble::*;
-use crate::fmt::{assert, unreachable, *};
 use crate::raw;
 use crate::util::get_union_field;
 use crate::util::{OnDrop, Portal};
 use crate::{RawError, Softdevice};
+
+struct RawAdvertisement<'a> {
+    kind: u8,
+    adv_data: Option<&'a [u8]>,
+    scan_data: Option<&'a [u8]>,
+}
 
 /// Connectable advertisement types, which can accept connections from interested Central devices.
 pub enum ConnectableAdvertisement<'a> {
@@ -32,61 +37,138 @@ pub enum ConnectableAdvertisement<'a> {
     },
 }
 
-impl<'a> ConnectableAdvertisement<'a> {
-    fn convert(&self) -> (u8, Option<&[u8]>, Option<&[u8]>) {
-        match self {
+impl<'a> From<ConnectableAdvertisement<'a>> for RawAdvertisement<'a> {
+    fn from(val: ConnectableAdvertisement<'a>) -> RawAdvertisement<'a> {
+        match val {
             ConnectableAdvertisement::ScannableUndirected {
                 adv_data,
                 scan_data,
-            } => (
-                raw::BLE_GAP_ADV_TYPE_CONNECTABLE_SCANNABLE_UNDIRECTED as u8,
-                Some(adv_data),
-                Some(scan_data),
-            ),
-            ConnectableAdvertisement::NonscannableDirected { scan_data } => (
-                raw::BLE_GAP_ADV_TYPE_CONNECTABLE_NONSCANNABLE_DIRECTED as u8,
-                None,
-                Some(scan_data),
-            ),
-            ConnectableAdvertisement::NonscannableDirectedHighDuty { scan_data } => (
-                raw::BLE_GAP_ADV_TYPE_CONNECTABLE_NONSCANNABLE_DIRECTED_HIGH_DUTY_CYCLE as u8,
-                None,
-                Some(scan_data),
-            ),
+            } => RawAdvertisement {
+                kind: raw::BLE_GAP_ADV_TYPE_CONNECTABLE_SCANNABLE_UNDIRECTED as u8,
+                adv_data: Some(adv_data),
+                scan_data: Some(scan_data),
+            },
+            ConnectableAdvertisement::NonscannableDirected { scan_data } => RawAdvertisement {
+                kind: raw::BLE_GAP_ADV_TYPE_CONNECTABLE_NONSCANNABLE_DIRECTED as u8,
+                adv_data: None,
+                scan_data: Some(scan_data),
+            },
+            ConnectableAdvertisement::NonscannableDirectedHighDuty { scan_data } => {
+                RawAdvertisement {
+                    kind: raw::BLE_GAP_ADV_TYPE_CONNECTABLE_NONSCANNABLE_DIRECTED_HIGH_DUTY_CYCLE
+                        as u8,
+                    adv_data: None,
+                    scan_data: Some(scan_data),
+                }
+            }
             #[cfg(any(feature = "s132", feature = "s140"))]
-            ConnectableAdvertisement::ExtendedNonscannableUndirected { adv_data } => (
-                raw::BLE_GAP_ADV_TYPE_EXTENDED_CONNECTABLE_NONSCANNABLE_UNDIRECTED as u8,
-                Some(adv_data),
-                None,
-            ),
+            ConnectableAdvertisement::ExtendedNonscannableUndirected { adv_data } => {
+                RawAdvertisement {
+                    kind: raw::BLE_GAP_ADV_TYPE_EXTENDED_CONNECTABLE_NONSCANNABLE_UNDIRECTED as u8,
+                    adv_data: Some(adv_data),
+                    scan_data: None,
+                }
+            }
             #[cfg(any(feature = "s132", feature = "s140"))]
-            ConnectableAdvertisement::ExtendedNonscannableDirected { adv_data } => (
-                raw::BLE_GAP_ADV_TYPE_EXTENDED_CONNECTABLE_NONSCANNABLE_DIRECTED as u8,
-                Some(adv_data),
-                None,
-            ),
+            ConnectableAdvertisement::ExtendedNonscannableDirected { adv_data } => {
+                RawAdvertisement {
+                    kind: raw::BLE_GAP_ADV_TYPE_EXTENDED_CONNECTABLE_NONSCANNABLE_DIRECTED as u8,
+                    adv_data: Some(adv_data),
+                    scan_data: None,
+                }
+            }
         }
     }
 }
 
 /// Non-Connectable advertisement types. They cannot accept connections, they can be
 /// only used to broadcast information in the air.
-pub enum NonconnectableAdvertisement {
-    ScannableUndirected,
-    NonscannableUndirected,
+pub enum NonconnectableAdvertisement<'a> {
+    ScannableUndirected {
+        adv_data: &'a [u8],
+        scan_data: &'a [u8],
+    },
+    NonscannableUndirected {
+        adv_data: &'a [u8],
+    },
     #[cfg(any(feature = "s132", feature = "s140"))]
-    ExtendedScannableUndirected,
+    ExtendedScannableUndirected {
+        adv_data: &'a [u8],
+        scan_data: &'a [u8],
+    },
     #[cfg(any(feature = "s132", feature = "s140"))]
-    ExtendedScannableDirected,
+    ExtendedScannableDirected {
+        adv_data: &'a [u8],
+        scan_data: &'a [u8],
+    },
     #[cfg(any(feature = "s132", feature = "s140"))]
-    ExtendedNonscannableUndirected,
+    ExtendedNonscannableUndirected {
+        adv_data: &'a [u8],
+    },
     #[cfg(any(feature = "s132", feature = "s140"))]
-    ExtendedNonscannableDirected,
+    ExtendedNonscannableDirected {
+        adv_data: &'a [u8],
+    },
+}
+
+impl<'a> From<NonconnectableAdvertisement<'a>> for RawAdvertisement<'a> {
+    fn from(val: NonconnectableAdvertisement<'a>) -> RawAdvertisement<'a> {
+        match val {
+            NonconnectableAdvertisement::ScannableUndirected {
+                adv_data,
+                scan_data,
+            } => RawAdvertisement {
+                kind: raw::BLE_GAP_ADV_TYPE_NONCONNECTABLE_SCANNABLE_UNDIRECTED as _,
+                adv_data: Some(adv_data),
+                scan_data: Some(scan_data),
+            },
+            NonconnectableAdvertisement::NonscannableUndirected { adv_data } => RawAdvertisement {
+                kind: raw::BLE_GAP_ADV_TYPE_NONCONNECTABLE_NONSCANNABLE_UNDIRECTED as _,
+                adv_data: Some(adv_data),
+                scan_data: None,
+            },
+            #[cfg(any(feature = "s132", feature = "s140"))]
+            NonconnectableAdvertisement::ExtendedScannableUndirected {
+                adv_data,
+                scan_data,
+            } => RawAdvertisement {
+                kind: raw::BLE_GAP_ADV_TYPE_EXTENDED_NONCONNECTABLE_SCANNABLE_UNDIRECTED as _,
+                adv_data: Some(adv_data),
+                scan_data: Some(scan_data),
+            },
+            #[cfg(any(feature = "s132", feature = "s140"))]
+            NonconnectableAdvertisement::ExtendedScannableDirected {
+                adv_data,
+                scan_data,
+            } => RawAdvertisement {
+                kind: raw::BLE_GAP_ADV_TYPE_EXTENDED_NONCONNECTABLE_SCANNABLE_DIRECTED as _,
+                adv_data: Some(adv_data),
+                scan_data: Some(scan_data),
+            },
+            #[cfg(any(feature = "s132", feature = "s140"))]
+            NonconnectableAdvertisement::ExtendedNonscannableUndirected { adv_data } => {
+                RawAdvertisement {
+                    kind: raw::BLE_GAP_ADV_TYPE_EXTENDED_NONCONNECTABLE_NONSCANNABLE_UNDIRECTED
+                        as _,
+                    adv_data: Some(adv_data),
+                    scan_data: None,
+                }
+            }
+            #[cfg(any(feature = "s132", feature = "s140"))]
+            NonconnectableAdvertisement::ExtendedNonscannableDirected { adv_data } => {
+                RawAdvertisement {
+                    kind: raw::BLE_GAP_ADV_TYPE_EXTENDED_NONCONNECTABLE_NONSCANNABLE_DIRECTED as _,
+                    adv_data: Some(adv_data),
+                    scan_data: None,
+                }
+            }
+        }
+    }
 }
 
 /// Error for [`advertise_start`]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Debug)]
 pub enum AdvertiseError {
     Timeout,
     NoFreeConn,
@@ -102,17 +184,10 @@ impl From<RawError> for AdvertiseError {
 static mut ADV_HANDLE: u8 = raw::BLE_GAP_ADV_SET_HANDLE_NOT_SET as u8;
 pub(crate) static ADV_PORTAL: Portal<*const raw::ble_evt_t> = Portal::new();
 
-// Begins an ATT MTU exchange procedure, followed by a data length update request as necessary.
-pub async fn advertise(
-    _sd: &Softdevice,
-    adv: ConnectableAdvertisement<'_>,
-    config: &Config,
-) -> Result<Connection, AdvertiseError> {
-    let (adv_type, adv_data, scan_data) = adv.convert();
-
+fn start_adv(adv: RawAdvertisement<'_>, config: &Config) -> Result<(), AdvertiseError> {
     // TODO make these configurable, only the right params based on type?
     let mut adv_params: raw::ble_gap_adv_params_t = unsafe { mem::zeroed() };
-    adv_params.properties.type_ = adv_type;
+    adv_params.properties.type_ = adv.kind;
     adv_params.primary_phy = config.primary_phy as u8;
     adv_params.secondary_phy = config.secondary_phy as u8;
     adv_params.duration = config.timeout.map(|t| t.max(1)).unwrap_or(0);
@@ -135,16 +210,9 @@ pub async fn advertise(
     };
 
     let datas = raw::ble_gap_adv_data_t {
-        adv_data: map_data(adv_data),
-        scan_rsp_data: map_data(scan_data),
+        adv_data: map_data(adv.adv_data),
+        scan_rsp_data: map_data(adv.scan_data),
     };
-
-    let d = OnDrop::new(|| {
-        let ret = unsafe { raw::sd_ble_gap_adv_stop(ADV_HANDLE) };
-        if let Err(_e) = RawError::convert(ret) {
-            warn!("sd_ble_gap_adv_stop: {:?}", _e);
-        }
-    });
 
     let ret = unsafe {
         raw::sd_ble_gap_adv_set_configure(&mut ADV_HANDLE as _, &datas as _, &adv_params as _)
@@ -172,8 +240,55 @@ pub async fn advertise(
         err
     })?;
 
-    // The advertising data needs to be kept alive for the entire duration of the advertising procedure.
+    Ok(())
+}
 
+/// Perform connectable advertising, returning the connection that's established as a result.
+pub async fn advertise(
+    _sd: &Softdevice,
+    adv: NonconnectableAdvertisement<'_>,
+    config: &Config,
+) -> Result<(), AdvertiseError> {
+    let d = OnDrop::new(|| {
+        let ret = unsafe { raw::sd_ble_gap_adv_stop(ADV_HANDLE) };
+        if let Err(_e) = RawError::convert(ret) {
+            warn!("sd_ble_gap_adv_stop: {:?}", _e);
+        }
+    });
+
+    start_adv(adv.into(), config)?;
+
+    // The advertising data needs to be kept alive for the entire duration of the advertising procedure.
+    let res = ADV_PORTAL
+        .wait_once(|ble_evt| unsafe {
+            match (*ble_evt).header.evt_id as u32 {
+                raw::BLE_GAP_EVTS_BLE_GAP_EVT_TIMEOUT => Err(AdvertiseError::Timeout),
+                raw::BLE_GAP_EVTS_BLE_GAP_EVT_ADV_SET_TERMINATED => Err(AdvertiseError::Timeout),
+                _ => unreachable!(),
+            }
+        })
+        .await;
+
+    d.defuse();
+    res
+}
+
+/// Perform connectable advertising, returning the connection that's established as a result.
+pub async fn advertise_connectable(
+    _sd: &Softdevice,
+    adv: ConnectableAdvertisement<'_>,
+    config: &Config,
+) -> Result<Connection, AdvertiseError> {
+    let d = OnDrop::new(|| {
+        let ret = unsafe { raw::sd_ble_gap_adv_stop(ADV_HANDLE) };
+        if let Err(_e) = RawError::convert(ret) {
+            warn!("sd_ble_gap_adv_stop: {:?}", _e);
+        }
+    });
+
+    start_adv(adv.into(), config)?;
+
+    // The advertising data needs to be kept alive for the entire duration of the advertising procedure.
     let res = ADV_PORTAL
         .wait_once(|ble_evt| unsafe {
             match (*ble_evt).header.evt_id as u32 {
@@ -183,9 +298,10 @@ pub async fn advertise(
                     let conn_handle = gap_evt.conn_handle;
                     let role = Role::from_raw(params.role);
                     let peer_address = Address::from_raw(params.peer_addr);
+                    let conn_params = params.conn_params;
                     debug!("connected role={:?} peer_addr={:?}", role, peer_address);
 
-                    match Connection::new(conn_handle, role, peer_address) {
+                    match Connection::new(conn_handle, role, peer_address, conn_params) {
                         Ok(conn) => {
                             #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
                             gap::do_data_length_update(conn_handle, ptr::null());

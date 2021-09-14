@@ -2,16 +2,16 @@ use core::convert::TryFrom;
 use core::mem::MaybeUninit;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-use crate::fmt::{panic, *};
+use crate::pac::interrupt;
+use crate::raw;
 use crate::util::Signal;
 use crate::RawError;
-use crate::{interrupt, raw};
 
 static SWI2_SIGNAL: Signal<()> = Signal::new();
 
 #[rustfmt::skip]
 #[repr(u32)]
-#[derive(IntoPrimitive, TryFromPrimitive, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, IntoPrimitive, TryFromPrimitive)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum SocEvent {
     Hfclkstarted = raw::NRF_SOC_EVTS_NRF_EVT_HFCLKSTARTED,
@@ -80,13 +80,13 @@ pub(crate) async fn run() {
     }
 }
 
-#[cfg(any(feature = "nrf52810", feature = "nrf52811"))]
+#[cfg(any(feature = "nrf52805", feature = "nrf52810", feature = "nrf52811"))]
 #[interrupt]
 unsafe fn SWI2() {
     SWI2_SIGNAL.signal(());
 }
 
-#[cfg(not(any(feature = "nrf52810", feature = "nrf52811")))]
+#[cfg(not(any(feature = "nrf52805", feature = "nrf52810", feature = "nrf52811")))]
 #[interrupt]
 unsafe fn SWI2_EGU2() {
     SWI2_SIGNAL.signal(());

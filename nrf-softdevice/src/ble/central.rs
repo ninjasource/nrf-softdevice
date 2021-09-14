@@ -6,14 +6,13 @@
 use core::mem;
 use core::ptr;
 
-use crate::ble::gap;
 use crate::ble::types::*;
 use crate::ble::{Address, Connection};
-use crate::fmt::{assert, unreachable, *};
 use crate::raw;
 use crate::util::{get_union_field, OnDrop, Portal};
 use crate::{RawError, Softdevice};
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConnectError {
     Timeout,
@@ -32,7 +31,7 @@ pub(crate) static CONNECT_PORTAL: Portal<*const raw::ble_evt_t> = Portal::new();
 
 // Begins an ATT MTU exchange procedure, followed by a data length update request as necessary.
 pub async fn connect(
-    sd: &Softdevice,
+    _sd: &Softdevice,
     config: &ConnectConfig<'_>,
 ) -> Result<Connection, ConnectError> {
     if let Some(w) = config.scan_config.whitelist {
@@ -69,12 +68,13 @@ pub async fn connect(
                     let conn_handle = gap_evt.conn_handle;
                     let role = Role::from_raw(params.role);
                     let peer_address = Address::from_raw(params.peer_addr);
+                    let conn_params = params.conn_params;
                     debug!("connected role={:?} peer_addr={:?}", role, peer_address);
 
-                    match Connection::new(conn_handle, role, peer_address) {
+                    match Connection::new(conn_handle, role, peer_address, conn_params) {
                         Ok(conn) => {
                             #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
-                            gap::do_data_length_update(conn_handle, ptr::null());
+                            crate::ble::gap::do_data_length_update(conn_handle, ptr::null());
 
                             Ok(conn)
                         }
@@ -97,7 +97,7 @@ pub async fn connect(
 
     #[cfg(feature = "ble-gatt-client")]
     {
-        let mtu = config.att_mtu.unwrap_or(sd.att_mtu);
+        let mtu = config.att_mtu.unwrap_or(_sd.att_mtu);
         unwrap!(crate::ble::gatt_client::att_mtu_exchange(&conn, mtu).await);
     }
 
@@ -130,6 +130,7 @@ impl<'a> Default for ConnectConfig<'a> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ScanError {
     Timeout,

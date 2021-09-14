@@ -1,8 +1,4 @@
-use core::mem;
-use core::ptr;
-
 use crate::ble::*;
-use crate::fmt::{panic, *};
 use crate::raw;
 use crate::util::get_union_field;
 use crate::RawError;
@@ -41,16 +37,39 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
             });
         }
         raw::BLE_GAP_EVTS_BLE_GAP_EVT_CONN_PARAM_UPDATE => {
-            let _conn_params = gap_evt.params.conn_param_update.conn_params;
+            let conn_params = gap_evt.params.conn_param_update.conn_params;
 
             debug!(
                 "on_conn_param_update conn_handle={:?} conn_sup_timeout={:?} max_conn_interval={:?} min_conn_interval={:?} slave_latency={:?}",
                 gap_evt.conn_handle,
-                _conn_params.conn_sup_timeout,
-                _conn_params.max_conn_interval,
-                _conn_params.min_conn_interval,
-                _conn_params.slave_latency,
+                conn_params.conn_sup_timeout,
+                conn_params.max_conn_interval,
+                conn_params.min_conn_interval,
+                conn_params.slave_latency,
             );
+
+            connection::with_state_by_conn_handle(gap_evt.conn_handle, |state| {
+                state.conn_params = conn_params;
+            });
+        }
+        #[cfg(feature = "ble-central")]
+        raw::BLE_GAP_EVTS_BLE_GAP_EVT_CONN_PARAM_UPDATE_REQUEST => {
+            let conn_handle = gap_evt.conn_handle;
+            let conn_params = gap_evt.params.conn_param_update_request.conn_params;
+            debug!(
+                "on_conn_param_update_request conn_handle={:?} conn_sup_timeout={:?} max_conn_interval={:?} min_conn_interval={:?} slave_latency={:?}",
+                gap_evt.conn_handle,
+                conn_params.conn_sup_timeout,
+                conn_params.max_conn_interval,
+                conn_params.min_conn_interval,
+                conn_params.slave_latency,
+            );
+
+            let ret = raw::sd_ble_gap_conn_param_update(conn_handle, &conn_params);
+            if let Err(err) = RawError::convert(ret) {
+                warn!("sd_ble_gap_conn_param_update err {:?}", err);
+                return;
+            }
         }
         raw::BLE_GAP_EVTS_BLE_GAP_EVT_TIMEOUT => {
             trace!("on_timeout conn_handle={:?}", gap_evt.conn_handle);
@@ -121,7 +140,7 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
             );
 
             let conn_handle = gap_evt.conn_handle;
-            do_data_length_update(conn_handle, ptr::null());
+            do_data_length_update(conn_handle, core::ptr::null());
         }
         #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
         raw::BLE_GAP_EVTS_BLE_GAP_EVT_DATA_LENGTH_UPDATE => {
@@ -149,7 +168,7 @@ pub(crate) unsafe fn do_data_length_update(
     conn_handle: u16,
     params: *const raw::ble_gap_data_length_params_t,
 ) {
-    let mut dl_limitation = mem::zeroed();
+    let mut dl_limitation = core::mem::zeroed();
     let ret = raw::sd_ble_gap_data_length_update(conn_handle, params, &mut dl_limitation);
     if let Err(_err) = RawError::convert(ret) {
         warn!("sd_ble_gap_data_length_update err {:?}", _err);

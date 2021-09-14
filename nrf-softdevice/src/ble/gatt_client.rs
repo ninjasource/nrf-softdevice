@@ -1,11 +1,9 @@
 //! Generic Attribute client. GATT clients consume functionality offered by GATT servers.
 
-use heapless::consts::*;
 use heapless::Vec;
 use num_enum::{FromPrimitive, IntoPrimitive};
 
 use crate::ble::*;
-use crate::fmt::{assert, assert_ne, panic, unreachable};
 use crate::raw;
 use crate::util::{get_flexarray, get_union_field, Portal};
 use crate::RawError;
@@ -55,7 +53,7 @@ pub trait Client {
 #[rustfmt::skip]
 #[repr(u32)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(IntoPrimitive, FromPrimitive)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, IntoPrimitive, FromPrimitive)]
 pub enum GattError {
     // This is not really an error, but IMO it's better to add it
     // anyway, just in case someone mistakenly converts BLE_GATT_STATUS_SUCCESS into GattError.
@@ -90,6 +88,7 @@ pub enum GattError {
 }
 
 /// Error type for [`discover`]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum DiscoverError {
     /// Connection is disconnected.
@@ -120,8 +119,8 @@ impl From<RawError> for DiscoverError {
     }
 }
 
-type DiscCharsMax = U6;
-type DiscDescsMax = U6;
+const DISC_CHARS_MAX: usize = 6;
+const DISC_DESCS_MAX: usize = 6;
 
 pub(crate) async fn discover_service(
     conn: &Connection,
@@ -170,7 +169,7 @@ async fn discover_characteristics(
     conn: &Connection,
     start_handle: u16,
     end_handle: u16,
-) -> Result<Vec<raw::ble_gattc_char_t, DiscCharsMax>, DiscoverError> {
+) -> Result<Vec<raw::ble_gattc_char_t, DISC_CHARS_MAX>, DiscoverError> {
     let conn_handle = conn.with_state(|state| state.check_connected())?;
 
     let ret = unsafe {
@@ -214,7 +213,7 @@ async fn discover_descriptors(
     conn: &Connection,
     start_handle: u16,
     end_handle: u16,
-) -> Result<Vec<raw::ble_gattc_desc_t, DiscDescsMax>, DiscoverError> {
+) -> Result<Vec<raw::ble_gattc_desc_t, DISC_DESCS_MAX>, DiscoverError> {
     let conn_handle = conn.with_state(|state| state.check_connected())?;
 
     let ret = unsafe {
@@ -275,7 +274,7 @@ async fn discover_inner<T: Client>(
         props: curr.char_props,
     };
 
-    let mut descriptors: Vec<Descriptor, DiscDescsMax> = Vec::new();
+    let mut descriptors: Vec<Descriptor, DISC_DESCS_MAX> = Vec::new();
 
     // Only if range is non-empty, discover. (if it's empty there must be no descriptors)
     if start_handle <= end_handle {
@@ -342,6 +341,7 @@ pub async fn discover<T: Client>(conn: &Connection) -> Result<T, DiscoverError> 
     Ok(client)
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ReadError {
     Disconnected,
@@ -404,9 +404,11 @@ pub async fn read(conn: &Connection, handle: u16, buf: &mut [u8]) -> Result<usiz
         .await
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum WriteError {
     Disconnected,
+    Timeout,
     Gatt(GattError),
     Raw(RawError),
 }
@@ -461,6 +463,9 @@ pub async fn write(conn: &Connection, handle: u16, buf: &[u8]) -> Result<(), Wri
                     };
                     Some(Ok(()))
                 }
+                raw::BLE_GATTC_EVTS_BLE_GATTC_EVT_TIMEOUT => {
+                    return Some(Err(WriteError::Timeout));
+                }
                 _ => None,
             }
         })
@@ -506,6 +511,7 @@ pub async fn write_without_response(
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum TryWriteError {
     Disconnected,
@@ -572,6 +578,7 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
     portal(gattc_evt.conn_handle).call(ble_evt);
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MtuExchangeError {
     /// Connection is disconnected.
@@ -598,6 +605,7 @@ impl From<RawError> for MtuExchangeError {
     }
 }
 
+#[cfg(feature = "ble-central")]
 pub(crate) async fn att_mtu_exchange(conn: &Connection, mtu: u16) -> Result<(), MtuExchangeError> {
     let conn_handle = conn.with_state(|state| state.check_connected())?;
 

@@ -1,27 +1,25 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
-#![feature(min_type_alias_impl_trait)]
-#![feature(impl_trait_in_bindings)]
 #![feature(alloc_error_handler)]
+#![allow(incomplete_features)]
 
 #[path = "../example_common.rs"]
 mod example_common;
-use example_common::*;
 
 use core::mem;
 use cortex_m_rt::entry;
 use defmt::info;
 use defmt::*;
+use embassy::executor::Executor;
+use embassy::util::Forever;
 
 use nrf_softdevice::ble::{gatt_server, peripheral};
 use nrf_softdevice::{raw, Softdevice};
 
-use embassy::executor::{task, Executor};
-use embassy::util::Forever;
 static EXECUTOR: Forever<Executor> = Forever::new();
 
-#[task]
+#[embassy::task]
 async fn softdevice_task(sd: &'static Softdevice) {
     sd.run().await;
 }
@@ -34,7 +32,7 @@ struct BatteryService {
     foo: u16,
 }
 
-#[task]
+#[embassy::task]
 async fn bluetooth_task(sd: &'static Softdevice) {
     let server: BatteryService = unwrap!(gatt_server::register(sd));
     #[rustfmt::skip]
@@ -54,7 +52,7 @@ async fn bluetooth_task(sd: &'static Softdevice) {
             adv_data,
             scan_data,
         };
-        let conn = unwrap!(peripheral::advertise(sd, adv, &config).await);
+        let conn = unwrap!(peripheral::advertise_connectable(sd, adv, &config).await);
 
         info!("advertising done!");
 
@@ -95,9 +93,9 @@ fn main() -> ! {
 
     let config = nrf_softdevice::Config {
         clock: Some(raw::nrf_clock_lf_cfg_t {
-            source: raw::NRF_CLOCK_LF_SRC_XTAL as u8,
-            rc_ctiv: 0,
-            rc_temp_ctiv: 0,
+            source: raw::NRF_CLOCK_LF_SRC_RC as u8,
+            rc_ctiv: 4,
+            rc_temp_ctiv: 2,
             accuracy: 7,
         }),
         conn_gap: Some(raw::ble_gap_conn_cfg_t {
@@ -127,8 +125,7 @@ fn main() -> ! {
         ..Default::default()
     };
 
-    let (sdp, _p) = take_peripherals();
-    let sd = Softdevice::enable(sdp, &config);
+    let sd = Softdevice::enable(&config);
 
     let executor = EXECUTOR.put(Executor::new());
     executor.run(|spawner| {

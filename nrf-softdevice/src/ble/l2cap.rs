@@ -7,7 +7,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::u16;
 
 use crate::ble::*;
-use crate::fmt::{assert, panic, unreachable, *};
 use crate::raw;
 use crate::util::{get_union_field, Portal};
 use crate::{RawError, Softdevice};
@@ -24,6 +23,7 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
         raw::BLE_L2CAP_EVTS_BLE_L2CAP_EVT_CH_TX => {
             let params = &l2cap_evt.params.tx;
             let pkt = unwrap!(NonNull::new(params.sdu_buf.p_data));
+            portal(l2cap_evt.conn_handle).call(ble_evt);
             (unwrap!(PACKET_FREE))(pkt)
         }
         _ => {
@@ -32,23 +32,26 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
     };
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum TxError {
+pub enum TxError<P: Packet> {
     Disconnected,
+    TxQueueFull(P),
     Raw(RawError),
 }
 
-impl From<DisconnectedError> for TxError {
+impl<P: Packet> From<DisconnectedError> for TxError<P> {
     fn from(_err: DisconnectedError) -> Self {
         TxError::Disconnected
     }
 }
 
-impl From<RawError> for TxError {
+impl<P: Packet> From<RawError> for TxError<P> {
     fn from(err: RawError) -> Self {
         TxError::Raw(err)
     }
 }
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum RxError {
     Disconnected,
@@ -68,6 +71,7 @@ impl From<RawError> for RxError {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SetupError {
     Disconnected,
@@ -303,7 +307,7 @@ impl<P: Packet> Channel<P> {
         &self.conn
     }
 
-    pub fn tx(&self, sdu: P) -> Result<(), TxError> {
+    pub fn try_tx(&self, sdu: P) -> Result<(), TxError<P>> {
         let conn_handle = self.conn.with_state(|s| s.check_connected())?;
 
         let (ptr, len) = sdu.into_raw_parts();
@@ -314,15 +318,47 @@ impl<P: Packet> Channel<P> {
         };
 
         let ret = unsafe { raw::sd_ble_l2cap_ch_tx(conn_handle, self.cid, &data) };
-        if let Err(err) = RawError::convert(ret) {
-            warn!("sd_ble_l2cap_ch_tx err {:?}", err);
-            // The SD didn't take ownership of the buffer, so it's on us to free it.
-            // Reconstruct the P and let it get dropped.
-            unsafe { P::from_raw_parts(ptr, len) };
-            return Err(err.into());
-        }
+        match RawError::convert(ret) {
+            Err(RawError::Resources) => {
+                Err(TxError::TxQueueFull(unsafe { P::from_raw_parts(ptr, len) }))
+            }
+            Err(err) => {
+                warn!("sd_ble_l2cap_ch_tx err {:?}", err);
+                // The SD didn't take ownership of the buffer, so it's on us to free it.
+                // Reconstruct the P and let it get dropped.
+                unsafe { P::from_raw_parts(ptr, len) };
 
-        Ok(())
+                Err(err.into())
+            }
+            Ok(()) => Ok(()),
+        }
+    }
+
+    pub async fn tx(&self, mut sdu: P) -> Result<(), TxError<P>> {
+        let conn_handle = self.conn.with_state(|s| s.check_connected())?;
+
+        loop {
+            match self.try_tx(sdu) {
+                Ok(()) => {
+                    return Ok(());
+                }
+                Err(TxError::TxQueueFull(ret_sdu)) => {
+                    sdu = ret_sdu;
+                    portal(conn_handle)
+                        .wait_once(|ble_evt| unsafe {
+                            match (*ble_evt).header.evt_id as u32 {
+                                raw::BLE_L2CAP_EVTS_BLE_L2CAP_EVT_CH_TX => (),
+                                _ => unreachable!("Invalid event"),
+                            }
+                        })
+                        .await;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+        }
     }
 
     pub async fn rx(&self) -> Result<P, RxError> {
@@ -344,10 +380,12 @@ impl<P: Packet> Channel<P> {
         }
 
         portal(conn_handle)
-            .wait_once(|ble_evt| unsafe {
+            .wait_many(|ble_evt| unsafe {
                 match (*ble_evt).header.evt_id as u32 {
-                    raw::BLE_GAP_EVTS_BLE_GAP_EVT_DISCONNECTED => Err(RxError::Disconnected),
-                    raw::BLE_L2CAP_EVTS_BLE_L2CAP_EVT_CH_RELEASED => Err(RxError::Disconnected),
+                    raw::BLE_GAP_EVTS_BLE_GAP_EVT_DISCONNECTED => Some(Err(RxError::Disconnected)),
+                    raw::BLE_L2CAP_EVTS_BLE_L2CAP_EVT_CH_RELEASED => {
+                        Some(Err(RxError::Disconnected))
+                    }
                     raw::BLE_L2CAP_EVTS_BLE_L2CAP_EVT_CH_RX => {
                         let l2cap_evt = get_union_field(ble_evt, &(*ble_evt).evt.l2cap_evt);
                         let evt = &l2cap_evt.params.rx;
@@ -355,9 +393,9 @@ impl<P: Packet> Channel<P> {
                         let ptr = unwrap!(NonNull::new(evt.sdu_buf.p_data));
                         let len = evt.sdu_len;
                         let pkt = Packet::from_raw_parts(ptr, len as usize);
-                        Ok(pkt)
+                        Some(Ok(pkt))
                     }
-                    _ => unreachable!(),
+                    _ => None,
                 }
             })
             .await

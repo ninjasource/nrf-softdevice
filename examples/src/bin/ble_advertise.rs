@@ -9,14 +9,12 @@ mod example_common;
 
 use core::mem;
 use cortex_m_rt::entry;
-use defmt::info;
-use defmt::*;
+use defmt::{info, unreachable, *};
 use embassy::executor::Executor;
 use embassy::util::Forever;
 
-use nrf_softdevice::ble::{central, gatt_client, Address, AddressType};
-use nrf_softdevice::raw;
-use nrf_softdevice::Softdevice;
+use nrf_softdevice::ble::peripheral;
+use nrf_softdevice::{raw, Softdevice};
 
 static EXECUTOR: Forever<Executor> = Forever::new();
 
@@ -25,36 +23,29 @@ async fn softdevice_task(sd: &'static Softdevice) {
     sd.run().await;
 }
 
-#[nrf_softdevice::gatt_client(uuid = "180f")]
-struct BatteryServiceClient {
-    #[characteristic(uuid = "2a19", read, write, notify)]
-    battery_level: u8,
-}
-
 #[embassy::task]
-async fn ble_central_task(sd: &'static Softdevice) {
-    let addrs = &[&Address::new(
-        AddressType::RandomStatic,
-        [0x06, 0x6b, 0x71, 0x2c, 0xf5, 0xc0],
-    )];
-    let mut config = central::ConnectConfig::default();
-    config.scan_config.whitelist = Some(addrs);
-    let conn = unwrap!(central::connect(sd, &config).await);
-    info!("connected");
+async fn bluetooth_task(sd: &'static Softdevice) {
+    #[rustfmt::skip]
+    let adv_data = &[
+        0x02, 0x01, raw::BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE as u8,
+        0x03, 0x03, 0x09, 0x18,
+        0x0a, 0x09, b'H', b'e', b'l', b'l', b'o', b'R', b'u', b's', b't',
+    ];
+    #[rustfmt::skip]
+    let scan_data = &[
+        0x03, 0x03, 0x09, 0x18,
+    ];
 
-    let client: BatteryServiceClient = unwrap!(gatt_client::discover(&conn).await);
+    let mut config = peripheral::Config::default();
+    config.interval = 50;
+    let adv = peripheral::NonconnectableAdvertisement::ScannableUndirected {
+        adv_data,
+        scan_data,
+    };
+    unwrap!(peripheral::advertise(sd, adv, &config).await);
 
-    // Read
-    let val = unwrap!(client.battery_level_read().await);
-    info!("read battery level: {}", val);
-
-    // Write, set it to 42
-    unwrap!(client.battery_level_write(42).await);
-    info!("Wrote battery level!");
-
-    // Read to check it's changed
-    let val = unwrap!(client.battery_level_read().await);
-    info!("read battery level: {}", val);
+    // advertise never returns
+    unreachable!();
 }
 
 #[entry]
@@ -70,9 +61,9 @@ fn main() -> ! {
         }),
         conn_gap: Some(raw::ble_gap_conn_cfg_t {
             conn_count: 6,
-            event_length: 6,
+            event_length: 24,
         }),
-        conn_gatt: Some(raw::ble_gatt_conn_cfg_t { att_mtu: 128 }),
+        conn_gatt: Some(raw::ble_gatt_conn_cfg_t { att_mtu: 256 }),
         gatts_attr_tab_size: Some(raw::ble_gatts_cfg_attr_tab_size_t {
             attr_tab_size: 32768,
         }),
@@ -100,6 +91,6 @@ fn main() -> ! {
     let executor = EXECUTOR.put(Executor::new());
     executor.run(|spawner| {
         unwrap!(spawner.spawn(softdevice_task(sd)));
-        unwrap!(spawner.spawn(ble_central_task(sd)));
+        unwrap!(spawner.spawn(bluetooth_task(sd)));
     });
 }

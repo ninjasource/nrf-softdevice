@@ -1,19 +1,41 @@
 use core::cell::Cell;
 use core::cell::UnsafeCell;
 
-use crate::ble::types::*;
-use crate::ble::*;
-use crate::fmt::{assert, *};
+use raw::ble_gap_conn_params_t;
+
+use crate::ble::types::{Address, AddressType, Role};
 use crate::raw;
 use crate::RawError;
 
+#[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
 const BLE_GAP_DATA_LENGTH_DEFAULT: u8 = 27; //  The stack's default data length. <27-251>
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct OutOfConnsError;
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DisconnectedError;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SetConnParamsError {
+    Disconnected,
+    Raw(RawError),
+}
+
+impl From<DisconnectedError> for SetConnParamsError {
+    fn from(_err: DisconnectedError) -> Self {
+        SetConnParamsError::Disconnected
+    }
+}
+
+impl From<RawError> for SetConnParamsError {
+    fn from(err: RawError) -> Self {
+        SetConnParamsError::Raw(err)
+    }
+}
 
 // Highest ever the softdevice can support.
 pub(crate) const CONNS_MAX: usize = 20;
@@ -42,6 +64,9 @@ pub(crate) struct ConnectionState {
     pub role: Role,
     pub peer_address: Address,
 
+    pub conn_params: ble_gap_conn_params_t,
+
+    #[cfg(feature = "ble-gatt")]
     pub att_mtu: u16, // Effective ATT_MTU size (in bytes).
     #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
     pub data_length_effective: u8, // Effective data length (in bytes).
@@ -60,6 +85,13 @@ impl ConnectionState {
             role: Role::Peripheral,
             peer_address: Address::new(AddressType::Public, [0; 6]),
             disconnecting: false,
+            conn_params: ble_gap_conn_params_t {
+                conn_sup_timeout: 0,
+                max_conn_interval: 0,
+                min_conn_interval: 0,
+                slave_latency: 0,
+            },
+            #[cfg(feature = "ble-gatt")]
             att_mtu: 0,
             #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
             data_length_effective: 0,
@@ -88,7 +120,7 @@ impl ConnectionState {
         Ok(())
     }
 
-    pub(crate) fn on_disconnected(&mut self, ble_evt: *const raw::ble_evt_t) {
+    pub(crate) fn on_disconnected(&mut self, _ble_evt: *const raw::ble_evt_t) {
         let conn_handle = unwrap!(
             self.conn_handle,
             "bug: on_disconnected when already disconnected"
@@ -102,11 +134,11 @@ impl ConnectionState {
 
         // Signal possible in-progess operations that the connection has disconnected.
         #[cfg(feature = "ble-gatt-client")]
-        gatt_client::portal(conn_handle).call(ble_evt);
+        crate::ble::gatt_client::portal(conn_handle).call(_ble_evt);
         #[cfg(feature = "ble-gatt-server")]
-        gatt_server::portal(conn_handle).call(ble_evt);
+        crate::ble::gatt_server::portal(conn_handle).call(_ble_evt);
         #[cfg(feature = "ble-l2cap")]
-        l2cap::portal(conn_handle).call(ble_evt);
+        crate::ble::l2cap::portal(conn_handle).call(_ble_evt);
 
         trace!("conn {:?}: disconnected", _index);
     }
@@ -172,6 +204,7 @@ impl Connection {
         conn_handle: u16,
         role: Role,
         peer_address: Address,
+        conn_params: ble_gap_conn_params_t,
     ) -> Result<Self, OutOfConnsError> {
         allocate_index(|index, state| {
             // Initialize
@@ -183,6 +216,9 @@ impl Connection {
 
                 disconnecting: false,
 
+                conn_params,
+
+                #[cfg(feature = "ble-gatt")]
                 att_mtu: raw::BLE_GATT_ATT_MTU_DEFAULT as _,
 
                 #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
@@ -197,6 +233,40 @@ impl Connection {
             trace!("conn {:?}: connected", index);
             Self { index }
         })
+    }
+
+    /// Get the currently active connection params.
+    pub fn conn_params(&self) -> ble_gap_conn_params_t {
+        with_state(self.index, |s| s.conn_params)
+    }
+
+    /// Get the currently active ATT MTU.
+    #[cfg(feature = "ble-gatt")]
+    pub fn att_mtu(&self) -> u16 {
+        with_state(self.index, |s| s.att_mtu)
+    }
+
+    /// Set the connection params.
+    ///
+    /// Note that this just initiates the connection param change, it does not wait for completion.
+    /// Immediately after return, the active params will still be the old ones, and after some time they
+    /// should change to the new ones.
+    ///
+    /// For central connections, this will initiate a Link Layer connection parameter update procedure.
+    /// For peripheral connections, this will send the corresponding L2CAP request to the central. It is then
+    /// up to the central to accept or deny the request.
+    pub fn set_conn_params(
+        &self,
+        conn_params: ble_gap_conn_params_t,
+    ) -> Result<(), SetConnParamsError> {
+        let conn_handle = self.with_state(|state| state.check_connected())?;
+        let ret = unsafe { raw::sd_ble_gap_conn_param_update(conn_handle, &conn_params) };
+        if let Err(err) = RawError::convert(ret) {
+            warn!("sd_ble_gap_conn_param_update err {:?}", err);
+            return Err(err.into());
+        }
+
+        Ok(())
     }
 
     pub(crate) fn with_state<T>(&self, f: impl FnOnce(&mut ConnectionState) -> T) -> T {
