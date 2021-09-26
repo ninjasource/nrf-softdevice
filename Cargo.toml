@@ -21,10 +21,14 @@ exclude = [
 ]
 
 [patch.crates-io]
-embassy = { git = "https://github.com/embassy-rs/embassy" }
-embassy-nrf = { git = "https://github.com/embassy-rs/embassy" }
-embassy-macros = { git = "https://github.com/embassy-rs/embassy" }
-embassy-traits = { git = "https://github.com/embassy-rs/embassy" }
+#embassy = { git = "https://github.com/embassy-rs/embassy" }
+#embassy-nrf = { git = "https://github.com/embassy-rs/embassy" }
+#embassy-macros = { git = "https://github.com/embassy-rs/embassy" }
+#embassy-traits = { git = "https://github.com/embassy-rs/embassy" }
+embassy = { path = "../embassy/embassy" }
+embassy-nrf = { path = "../embassy/embassy-nrf" }
+embassy-macros = { path = "../embassy/embassy-macros" }
+embassy-traits = { path = "../embassy/embassy-traits" }
 
 [profile.release]
 codegen-units = 1

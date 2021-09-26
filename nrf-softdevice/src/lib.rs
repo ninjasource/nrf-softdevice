@@ -5,7 +5,6 @@
 #![feature(const_fn_trait_bound)]
 #![feature(cell_update)]
 #![allow(incomplete_features)]
-#![feature(const_fn_trait_bound)]
 
 pub(crate) mod util;
 
